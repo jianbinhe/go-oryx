@@ -1,6 +1,6 @@
 // The MIT License (MIT)
 //
-// Copyright (c) 2013-2015 Oryx(ossrs)
+// Copyright (c) 2013-2016 Oryx(ossrs)
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy of
 // this software and associated documentation files (the "Software"), to deal in
@@ -242,6 +242,11 @@ func (v *Server) Initialize() (err error) {
 	// use worker container to fork.
 	var wc core.WorkerContainer = v
 
+	// heartbeat with http api.
+	if err = v.htbt.Initialize(wc); err != nil {
+		return
+	}
+
 	// reload goroutine
 	wc.GFork("reload", core.Conf.ReloadCycle)
 	// heartbeat goroutine
@@ -265,6 +270,20 @@ func (v *Server) Initialize() (err error) {
 	v.closed = StateReady
 
 	return
+}
+
+func (v *Server) onSignal(signal os.Signal) {
+	ctx := v.ctx
+	wc := v
+
+	core.Trace.Println(ctx, "got signal", signal)
+	switch signal {
+	case SIGUSR1, SIGUSR2:
+		panic("panic by SIGUSR1/2")
+	case os.Interrupt, syscall.SIGTERM:
+		// SIGINT, SIGTERM
+		wc.Quit()
+	}
 }
 
 func (v *Server) Run() (err error) {
@@ -302,14 +321,17 @@ func (v *Server) Run() (err error) {
 
 		select {
 		case signal := <-v.sigs:
-			core.Trace.Println(ctx, "got signal", signal)
-			switch signal {
-			case os.Interrupt, syscall.SIGTERM:
-				// SIGINT, SIGTERM
-				wc.Quit()
-			}
+			v.onSignal(signal)
 		case <-wc.QC():
 			wc.Quit()
+
+			// for the following quit will block all signal process,
+			// we start new goroutine to process the panic signal only.
+			go func() {
+				for s := range v.sigs {
+					v.onSignal(s)
+				}
+			}()
 
 			// wait for all goroutines quit.
 			v.wg.Wait()

@@ -1,6 +1,6 @@
 // The MIT License (MIT)
 //
-// Copyright (c) 2013-2015 Oryx(ossrs)
+// Copyright (c) 2013-2016 Oryx(ossrs)
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy of
 // this software and associated documentation files (the "Software"), to deal in
@@ -24,7 +24,6 @@ package protocol
 import (
 	"bufio"
 	"bytes"
-	"crypto"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding"
@@ -286,9 +285,12 @@ var RtmpGenuineFPKey []byte = []byte{
 //       hashlib.sha256(data).digest().
 func opensslHmacSha256(key []byte, data []byte) (digest []byte, err error) {
 	if key == nil {
-		return crypto.SHA256.New().Sum(data), nil
+		// without key, directly use sha256 to get the hash.
+		b := sha256.Sum256(data)
+		return b[:], nil
 	}
 
+	// when specified key, use HMAC to get the hash for key&message.
 	h := hmac.New(sha256.New, key)
 	if _, err = h.Write(data); err != nil {
 		return
@@ -1271,6 +1273,7 @@ func (v *RtmpConnection) FmleStartPublish() (err error) {
 			}
 			return true, nil
 		case *RtmpPublishPacket:
+			// TODO: FIXME: the obs will drop the metadata.
 			res := NewRtmpOnStatusCallPacket().(*RtmpOnStatusCallPacket)
 			res.Name = Amf0String(Amf0CommandFcPublish)
 			res.Data.Set(StatusCode, NewAmf0String(StatusCodePublishStart))
@@ -1278,6 +1281,7 @@ func (v *RtmpConnection) FmleStartPublish() (err error) {
 			if err = v.write(res, v.sid); err != nil {
 				return
 			}
+			core.Info.Println(ctx, "FcPublish ok.")
 
 			res = NewRtmpOnStatusCallPacket().(*RtmpOnStatusCallPacket)
 			res.Data.Set(StatusLevel, NewAmf0String(StatusLevelStatus))
@@ -1287,7 +1291,10 @@ func (v *RtmpConnection) FmleStartPublish() (err error) {
 			if err = v.write(res, v.sid); err != nil {
 				return
 			}
-			return true, nil
+			core.Info.Println(ctx, "onStatus Publish.Start ok.")
+
+			// when already publish ready, ok. to make obs happy.
+			return false, nil
 		case *RtmpOnStatusCallPacket:
 			if p.Name == "onFCPublish" {
 				core.Trace.Println(ctx, "FMLE start publish ok.")
@@ -1397,6 +1404,7 @@ func (v *RtmpConnection) FlashStartPlay() (err error) {
 		return
 	} else if !r {
 		v.groupMessages = true
+		core.Trace.Println(ctx, "use message group", v.nbGroupMessages)
 	} else {
 		v.groupMessages = false
 		core.Trace.Println(ctx, "enter realtime mode, disable message group")
@@ -1416,7 +1424,7 @@ func (v *RtmpConnection) CacheMessage(m *RtmpMessage) (err error) {
 	v.out = append(v.out, m)
 
 	// notify when messages is enough and sender is not working.
-	if len(v.out) >= v.requiredMessages() && !v.isFlusherWorking {
+	if !v.isFlusherWorking && len(v.out) >= v.nbGroupMessages {
 		v.needNotifyFlusher = true
 	}
 
@@ -1453,13 +1461,6 @@ func (v *RtmpConnection) Cycle(fn func(*RtmpMessage) error) (err error) {
 	return
 }
 
-func (v *RtmpConnection) requiredMessages() int {
-	if v.groupMessages && v.nbGroupMessages > 0 {
-		return v.nbGroupMessages
-	}
-	return 1
-}
-
 func (v *RtmpConnection) toggleNotify() bool {
 	nn := v.needNotifyFlusher
 	v.needNotifyFlusher = false
@@ -1468,15 +1469,29 @@ func (v *RtmpConnection) toggleNotify() bool {
 
 // to push message to send queue.
 func (v *RtmpConnection) flush() (err error) {
+	// send one by one, for without group messages.
+	if !v.groupMessages {
+		v.writeLock.Lock()
+		defer v.writeLock.Unlock()
+
+		out := v.out[:]
+		v.out = v.out[0:0]
+
+		for _, m := range out {
+			if err = v.stack.SendMessage(m); err != nil {
+				return
+			}
+		}
+		return
+	}
+
+	// group messages, for high efficient send.
 	v.isFlusherWorking = true
 	defer func() {
 		v.isFlusherWorking = false
 	}()
 
 	for {
-		// cache the required messages.
-		required := v.requiredMessages()
-
 		// force to ignore small pieces for group message.
 		if v.groupMessages && len(v.out) < v.nbGroupMessages/2 {
 			break
@@ -1493,27 +1508,8 @@ func (v *RtmpConnection) flush() (err error) {
 		}()
 
 		// sendout all messages.
-		for {
-			// nothing, ingore.
-			if len(out) == 0 {
-				return
-			}
-
-			// send one by one.
-			if required <= 1 {
-				for _, m := range out {
-					if err = v.stack.SendMessage(m); err != nil {
-						return
-					}
-				}
-				break
-			}
-
-			// last group and left messages.
-			if err = v.stack.SendMessage(out...); err != nil {
-				return
-			}
-			break
+		if err = v.stack.SendMessage(out...); err != nil {
+			return
 		}
 	}
 

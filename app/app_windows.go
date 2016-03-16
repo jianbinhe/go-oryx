@@ -19,24 +19,9 @@
 // IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-package protocol
+package app
 
-import (
-	"github.com/ossrs/go-oryx/core"
-	"io/ioutil"
-	"log"
-	"os"
-	"testing"
-)
+import "syscall"
 
-func TestMain(m *testing.M) {
-	ctx := core.NewContext()
-	core.Conf = core.NewConfig(ctx)
-
-	core.Info = core.NewLoggerPlus(log.New(ioutil.Discard, core.LogInfoLabel, log.LstdFlags))
-	core.Trace = core.NewLoggerPlus(log.New(ioutil.Discard, core.LogTraceLabel, log.LstdFlags))
-	core.Warn = core.NewLoggerPlus(log.New(ioutil.Discard, core.LogWarnLabel, log.LstdFlags))
-	core.Error = core.NewLoggerPlus(log.New(ioutil.Discard, core.LogErrorLabel, log.LstdFlags))
-
-	os.Exit(m.Run())
-}
+var SIGUSR1 = syscall.Signal(0xf1)
+var SIGUSR2 = syscall.Signal(0xf2)
